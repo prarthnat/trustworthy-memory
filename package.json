@@ -1,0 +1,19 @@
+{
+  "name": "caygnus",
+  "version": "1.0.0",
+  "description": "Trustworthy Long-Term Memory System",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=backend\" \"npm run dev --workspace=frontend\"",
+    "install:all": "npm install && npm install --workspace=backend && npm install --workspace=frontend",
+    "test": "npm run test --workspace=backend",
+    "benchmark": "npm run benchmark --workspace=backend"
+  },
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
