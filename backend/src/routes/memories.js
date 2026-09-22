@@ -8,8 +8,36 @@ const express = require('express');
 const router  = express.Router();
 
 const memSvc  = require('../services/memoryService');
-const resolver = require('../services/correctionResolver');
+const reconciliation = require('../services/reconciliationService');
 const { requireFields, validateSourceType, validateConfidence } = require('../middleware/validate');
+
+function createAndReconcile(req, res, next) {
+  try {
+    const memory = memSvc.createMemory({
+      id:          req.body.id,
+      content:     req.body.content,
+      topic:       req.body.topic,
+      source:      req.body.source,
+      source_type: req.body.source_type,
+      confidence:  req.body.confidence,
+      tags:        req.body.tags || [],
+      valid_from:  req.body.valid_from || null,
+      valid_until: req.body.valid_until || null,
+      metadata:    req.body.metadata || {},
+      actor:       req.body.actor || 'api',
+    });
+
+    const reconciliationResult = reconciliation.reconcileMemory(memory, req.body.actor || 'api');
+    const finalMemory = memSvc.getMemoryById(memory.id);
+
+    res.status(201).json({
+      success: true,
+      data: { memory: finalMemory, reconciliation: reconciliationResult },
+    });
+  } catch (err) {
+    next(err);
+  }
+}
 
 // ─── POST /api/memories ───────────────────────────────────────────────────────
 // Create a new memory and automatically resolve conflicts.
@@ -19,35 +47,18 @@ router.post(
   requireFields(['content', 'topic', 'source', 'source_type']),
   validateSourceType,
   validateConfidence,
-  (req, res, next) => {
-    try {
-      const memory = memSvc.createMemory({
-        content:     req.body.content,
-        topic:       req.body.topic,
-        source:      req.body.source,
-        source_type: req.body.source_type,
-        confidence:  req.body.confidence,
-        tags:        req.body.tags || [],
-        valid_from:  req.body.valid_from || null,
-        valid_until: req.body.valid_until || null,
-        metadata:    req.body.metadata || {},
-        actor:       req.body.actor || 'api',
-      });
+  createAndReconcile
+);
 
-      // Resolve conflicts after insert
-      const resolution = resolver.resolveConflicts(memory, req.body.actor || 'api');
+// ─── POST /api/memories/correct ──────────────────────────────────────────────
+// Explicit correction endpoint; same storage path, clearer API intent.
 
-      // Re-fetch the memory in case its status changed to 'contradicted'
-      const finalMemory = memSvc.getMemoryById(memory.id);
-
-      res.status(201).json({
-        success:    true,
-        data:       { memory: finalMemory, resolution },
-      });
-    } catch (err) {
-      next(err);
-    }
-  }
+router.post(
+  '/correct',
+  requireFields(['content', 'topic', 'source', 'source_type']),
+  validateSourceType,
+  validateConfidence,
+  createAndReconcile
 );
 
 // ─── GET /api/memories ────────────────────────────────────────────────────────
@@ -64,6 +75,9 @@ router.get('/', (req, res, next) => {
     });
     res.json({ success: true, data: memories });
   } catch (err) {
+    if (err.message.includes('active successor')) {
+      return res.status(409).json({ success: false, error: err.message });
+    }
     next(err);
   }
 });
@@ -132,7 +146,7 @@ router.post('/:id/restore', (req, res, next) => {
 
 router.post('/:id/supersede', requireFields(['new_memory_id', 'reason']), (req, res, next) => {
   try {
-    const result = resolver.manualSupersede(
+    const result = reconciliation.manualSupersede(
       req.params.id,
       req.body.new_memory_id,
       req.body.reason,
@@ -149,7 +163,7 @@ router.post('/:id/supersede', requireFields(['new_memory_id', 'reason']), (req, 
 
 router.get('/:id/supersessions', (req, res, next) => {
   try {
-    const chain = resolver.getSupersessionChain(req.params.id);
+    const chain = reconciliation.getSupersessionChain(req.params.id);
     res.json({ success: true, data: chain });
   } catch (err) {
     next(err);

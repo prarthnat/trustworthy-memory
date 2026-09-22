@@ -16,8 +16,8 @@
 
 const db = require('../db/db');
 const { retrieve } = require('./retrievalEngine');
-const { createMemory } = require('./memoryService');
-const { migrate } = require('../db/migrate');
+const path = require('path');
+const fs = require('fs');
 
 // ─── Load benchmark definitions ───────────────────────────────────────────────
 
@@ -47,12 +47,26 @@ function parseBenchmark(row) {
  * Expected spec shape:
  * {
  *   results: [{ memory_id, score_gte?, score_lte?, position? }],
- *   excluded: ['id1', 'id2']  // must NOT appear in results
+ *   excluded: ['id1', 'id2'],  // legacy shape
+ *   expected_inclusions: ['id1'],
+ *   expected_exclusions: ['id2']
  * }
  */
 function compare(actual, expected) {
   const failures = [];
   const actualIds = actual.results.map((r) => r.memory_id);
+
+  for (const id of (expected.expected_inclusions || [])) {
+    if (!actualIds.includes(id)) {
+      failures.push(`Expected memory "${id}" in results but not found. ${expected.why || ''}`.trim());
+    }
+  }
+
+  for (const id of (expected.expected_exclusions || [])) {
+    if (actualIds.includes(id)) {
+      failures.push(`Memory "${id}" should NOT appear in results but was returned. ${expected.why || ''}`.trim());
+    }
+  }
 
   // Check required results
   for (const req of (expected.results || [])) {
@@ -101,6 +115,8 @@ function compare(actual, expected) {
 // ─── Seed helper ─────────────────────────────────────────────────────────────
 
 function seedMemories(memories) {
+  const supersessionEdges = [];
+
   for (const mem of memories) {
     // Insert directly (bypass conflict resolution for benchmark seeding)
     const ts = mem.created_at || (Date.now() - (mem._age_days || 0) * 86400000);
@@ -135,7 +151,6 @@ function seedMemories(memories) {
       }
     }
 
-    // Audit log entry for created
     const { v4: uuidv4 } = require('uuid');
     db.prepare(
       `INSERT INTO memory_audit_log
@@ -143,30 +158,86 @@ function seedMemories(memories) {
        VALUES (?, ?, 'created', ?, 'benchmark', ?)`
     ).run(uuidv4(), mem.id, JSON.stringify({ content: mem.content }), ts);
 
-    // Supersessions
+    if (mem.supersedes) {
+      supersessionEdges.push({
+        old_memory_id: mem.supersedes,
+        new_memory_id: mem.id,
+        reason: mem._supersession_reason || 'fixture supersedes link',
+      });
+    }
+    if (mem.superseded_by) {
+      supersessionEdges.push({
+        old_memory_id: mem.id,
+        new_memory_id: mem.superseded_by,
+        reason: mem._supersession_reason || 'fixture superseded_by link',
+      });
+    }
     if (mem._superseded_by) {
-      // Will be linked after all memories seeded
+      supersessionEdges.push({
+        old_memory_id: mem.id,
+        new_memory_id: mem._superseded_by,
+        reason: mem._supersession_reason || 'benchmark fixture',
+      });
     }
   }
 
-  // Handle supersession links
+  for (const edge of supersessionEdges) {
+    const { v4: uuidv4 } = require('uuid');
+    db.prepare(
+      `INSERT OR IGNORE INTO memory_supersessions
+       (id, old_memory_id, new_memory_id, reason, superseded_at, superseded_by)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(
+      uuidv4(),
+      edge.old_memory_id,
+      edge.new_memory_id,
+      edge.reason,
+      Date.now(),
+      'benchmark'
+    );
+  }
+
   for (const mem of memories) {
-    if (mem._superseded_by) {
+    if (mem.conflicts_with && mem.conflicts_with.length) {
       const { v4: uuidv4 } = require('uuid');
-      db.prepare(
-        `INSERT OR IGNORE INTO memory_supersessions
-         (id, old_memory_id, new_memory_id, reason, superseded_at, superseded_by)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).run(
-        uuidv4(),
-        mem.id,
-        mem._superseded_by,
-        mem._supersession_reason || 'benchmark fixture',
-        Date.now(),
-        'benchmark'
-      );
+      for (const related of mem.conflicts_with) {
+        db.prepare(
+          `INSERT OR IGNORE INTO memory_conflicts
+           (id, memory_id, related_memory_id, conflict_type, reason, created_at)
+           VALUES (?, ?, ?, 'ambiguous', ?, ?)`
+        ).run(
+          uuidv4(),
+          mem.id,
+          related,
+          mem.conflict_policy || 'ambiguous_non_replacement',
+          Date.now()
+        );
+      }
     }
   }
+}
+
+function loadJson(relativePath) {
+  return JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', relativePath), 'utf8'));
+}
+
+function loadFixtureBenchmarks() {
+  const memories = loadJson('fixtures/memories.json');
+  const queries = loadJson('fixtures/queries.json');
+  const expected = loadJson('fixtures/expected_results.json');
+  const expectedByQuery = new Map(expected.map((item) => [item.query_id, item]));
+  const fixedNow = Math.max(...memories.map((memory) => memory.updated_at || memory.created_at || 0));
+
+  return queries.map((query) => ({
+    id: `fixture-${query.id}`,
+    name: `Fixture ${query.id}: ${query.query}`,
+    description: expectedByQuery.get(query.id)?.why || 'Fixture-backed deterministic retrieval benchmark.',
+    input: {
+      memories,
+      query: { ...query, now: fixedNow },
+    },
+    expected: expectedByQuery.get(query.id) || { expected_inclusions: [], expected_exclusions: [] },
+  }));
 }
 
 // ─── Run a single benchmark ───────────────────────────────────────────────────
@@ -239,9 +310,10 @@ function runAll() {
 // ─── Seed built-in benchmark definitions on first run ────────────────────────
 
 function seedBuiltinBenchmarks() {
-  const builtins = require('../../tests/benchmarks/deterministicSuite');
+  const builtins = loadFixtureBenchmarks();
+  db.prepare('DELETE FROM benchmarks').run();
   const insert = db.prepare(
-    `INSERT OR IGNORE INTO benchmarks (id, name, description, input, expected)
+    `INSERT OR REPLACE INTO benchmarks (id, name, description, input, expected)
      VALUES (?, ?, ?, ?, ?)`
   );
   for (const b of builtins) {

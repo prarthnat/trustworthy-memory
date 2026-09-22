@@ -1,0 +1,122 @@
+[
+  {
+    "query_id": "q_001",
+    "expected_inclusions": ["mem_003"],
+    "expected_exclusions": ["mem_001", "mem_002", "mem_027", "mem_028"],
+    "why": "The active home city is Pune again; old Pune/Mumbai are superseded, deleted Delhi is hidden, and travel to Mumbai is not home city."
+  },
+  {
+    "query_id": "q_002",
+    "expected_inclusions": ["mem_002", "mem_003", "mem_001"],
+    "expected_exclusions": ["mem_027"],
+    "why": "include_superseded exposes the full home-city chain, but deleted memories remain excluded."
+  },
+  {
+    "query_id": "q_003",
+    "expected_inclusions": ["mem_005"],
+    "expected_exclusions": ["mem_004", "mem_013"],
+    "why": "VS Code is the active primary IDE; Vim is superseded and Cursor is secondary/sometimes use."
+  },
+  {
+    "query_id": "q_004",
+    "expected_inclusions": ["mem_013"],
+    "expected_exclusions": ["mem_004"],
+    "why": "Cursor is retrievable for Cursor-specific queries; old Vim remains superseded."
+  },
+  {
+    "query_id": "q_005",
+    "expected_inclusions": ["mem_007"],
+    "expected_exclusions": ["mem_006", "mem_012"],
+    "why": "TypeScript replaced JavaScript as favorite; enjoying Python recently does not replace favorite language."
+  },
+  {
+    "query_id": "q_006",
+    "expected_inclusions": ["mem_012"],
+    "expected_exclusions": ["mem_006"],
+    "why": "Recent Python interest is its own active memory; old JavaScript favorite is superseded."
+  },
+  {
+    "query_id": "q_007",
+    "expected_inclusions": ["mem_009"],
+    "expected_exclusions": ["mem_008"],
+    "why": "Globex is the current employer; Acme is superseded."
+  },
+  {
+    "query_id": "q_008",
+    "expected_inclusions": ["mem_011"],
+    "expected_exclusions": ["mem_010"],
+    "why": "Vegan now supersedes vegetarian for current diet."
+  },
+  {
+    "query_id": "q_009",
+    "expected_inclusions": ["mem_014"],
+    "expected_exclusions": ["mem_015"],
+    "why": "Dark mode matches UI theme; metric units are unrelated preferences."
+  },
+  {
+    "query_id": "q_010",
+    "expected_inclusions": ["mem_015"],
+    "expected_exclusions": ["mem_014"],
+    "why": "Metric units answer unit system; dark mode should not match."
+  },
+  {
+    "query_id": "q_011",
+    "expected_inclusions": ["mem_016"],
+    "expected_exclusions": ["mem_017"],
+    "why": "Billing notifications are sent by email; marketing email preference is a different notification scope."
+  },
+  {
+    "query_id": "q_012",
+    "expected_inclusions": ["mem_017"],
+    "expected_exclusions": ["mem_016"],
+    "why": "Marketing emails are disabled; billing notifications are separate."
+  },
+  {
+    "query_id": "q_013",
+    "expected_inclusions": ["mem_018"],
+    "expected_exclusions": ["mem_003"],
+    "why": "Timezone is profile metadata, not home city."
+  },
+  {
+    "query_id": "q_014",
+    "expected_inclusions": ["mem_019"],
+    "expected_exclusions": ["mem_018"],
+    "why": "Name query should return profile name, not timezone."
+  },
+  {
+    "query_id": "q_015",
+    "expected_inclusions": ["mem_020"],
+    "expected_exclusions": ["mem_011"],
+    "why": "Peanut allergy is health information; vegan diet is separate."
+  },
+  {
+    "query_id": "q_016",
+    "expected_inclusions": ["mem_024"],
+    "expected_exclusions": ["mem_025", "mem_026"],
+    "why": "Tech stack query asks Node/React stack, not database or deterministic retrieval requirement."
+  },
+  {
+    "query_id": "q_017",
+    "expected_inclusions": ["mem_025"],
+    "expected_exclusions": ["mem_024"],
+    "why": "Database query should return SQLite memory."
+  },
+  {
+    "query_id": "q_018",
+    "expected_inclusions": ["mem_026"],
+    "expected_exclusions": ["mem_024", "mem_025"],
+    "why": "Retrieval requirement query should return deterministic retrieval memory."
+  },
+  {
+    "query_id": "q_019",
+    "expected_inclusions": [],
+    "expected_exclusions": ["mem_027"],
+    "why": "Deleted Delhi memory appears in history views only and must not be retrieved."
+  },
+  {
+    "query_id": "q_020",
+    "expected_inclusions": ["mem_029"],
+    "expected_exclusions": ["mem_016", "mem_017"],
+    "why": "Meeting time preference is a calendar preference, not an email notification preference."
+  }
+]

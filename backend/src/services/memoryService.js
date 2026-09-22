@@ -16,6 +16,22 @@ function now() {
   return Date.now();
 }
 
+function normaliseTopic(topic) {
+  return (topic || 'general').trim().toLowerCase();
+}
+
+function normaliseTag(tag) {
+  return String(tag || '').trim().toLowerCase();
+}
+
+function parseJson(value, fallback) {
+  try {
+    return JSON.parse(value || JSON.stringify(fallback));
+  } catch (_err) {
+    return fallback;
+  }
+}
+
 /**
  * Fetch tags for a memory as an array of strings.
  */
@@ -33,7 +49,7 @@ function hydrate(row) {
   if (!row) return null;
   return {
     ...row,
-    metadata: JSON.parse(row.metadata || '{}'),
+    metadata: parseJson(row.metadata, {}),
     tags: fetchTags(row.id),
   };
 }
@@ -88,25 +104,30 @@ const createMemory = db.transaction((params) => {
     valid_until = null,
     metadata = {},
     actor = 'system',
+    id = uuidv4(),
+    created_at,
+    updated_at,
+    status = 'active',
   } = params;
 
-  const id = uuidv4();
-  const ts = now();
+  const ts = created_at || now();
+  const updateTs = updated_at || ts;
 
   db.prepare(
     `INSERT INTO memories
      (id, content, topic, source, source_type, confidence, status,
       created_at, updated_at, valid_from, valid_until, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
     id,
     content.trim(),
-    topic.trim().toLowerCase(),
+    normaliseTopic(topic),
     source,
     source_type,
     confidence,
+    status,
     ts,
-    ts,
+    updateTs,
     valid_from,
     valid_until,
     JSON.stringify(metadata)
@@ -117,13 +138,14 @@ const createMemory = db.transaction((params) => {
     'INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)'
   );
   for (const tag of tags) {
-    insertTag.run(id, tag.trim().toLowerCase());
+    const normalised = normaliseTag(tag);
+    if (normalised) insertTag.run(id, normalised);
   }
 
   logEvent({
     memoryId: id,
     eventType: 'created',
-    newValue: { content, topic, source, source_type, confidence, tags },
+    newValue: { content, topic: normaliseTopic(topic), source, source_type, confidence, tags, status },
     actor,
   });
 
@@ -210,7 +232,7 @@ const updateMemory = db.transaction(({ id, updates, actor = 'system' }) => {
     throw new Error('Cannot update a deleted memory. Restore it first.');
   }
 
-  const allowed = ['content', 'confidence', 'valid_from', 'valid_until', 'metadata', 'topic'];
+  const allowed = ['content', 'confidence', 'valid_from', 'valid_until', 'metadata', 'topic', 'source', 'source_type'];
   const setClauses = [];
   const params = [];
   const oldSnap = {};
@@ -219,9 +241,14 @@ const updateMemory = db.transaction(({ id, updates, actor = 'system' }) => {
   for (const key of allowed) {
     if (updates[key] !== undefined) {
       oldSnap[key] = existing[key];
-      newSnap[key] = key === 'metadata' ? JSON.stringify(updates[key]) : updates[key];
+      const nextValue = key === 'metadata'
+        ? JSON.stringify(updates[key])
+        : key === 'topic'
+          ? normaliseTopic(updates[key])
+          : updates[key];
+      newSnap[key] = nextValue;
       setClauses.push(`${key} = ?`);
-      params.push(newSnap[key]);
+      params.push(nextValue);
     }
   }
 
@@ -235,15 +262,16 @@ const updateMemory = db.transaction(({ id, updates, actor = 'system' }) => {
 
   // Handle tag updates
   if (updates.tags !== undefined) {
+    oldSnap.tags = fetchTags(id);
     db.prepare('DELETE FROM memory_tags WHERE memory_id = ?').run(id);
     const insertTag = db.prepare(
       'INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)'
     );
     for (const tag of updates.tags) {
-      insertTag.run(id, tag.trim().toLowerCase());
+      const normalised = normaliseTag(tag);
+      if (normalised) insertTag.run(id, normalised);
     }
-    oldSnap.tags = fetchTags(id);
-    newSnap.tags = updates.tags;
+    newSnap.tags = updates.tags.map(normaliseTag).filter(Boolean);
   }
 
   logEvent({ memoryId: id, eventType: 'updated', oldValue: oldSnap, newValue: newSnap, actor });
@@ -279,6 +307,19 @@ const restoreMemory = db.transaction(({ id, actor = 'system' }) => {
   if (!existing) return null;
   if (existing.status !== 'deleted') return hydrate(existing);
 
+  const replacement = db
+    .prepare(
+      `SELECT m.id
+       FROM memory_supersessions s
+       JOIN memories m ON m.id = s.new_memory_id
+       WHERE s.old_memory_id = ? AND m.status = 'active'
+       LIMIT 1`
+    )
+    .get(id);
+  if (replacement) {
+    throw new Error(`Cannot restore memory ${id}; active successor ${replacement.id} exists.`);
+  }
+
   const ts = now();
   db.prepare(`UPDATE memories SET status = 'active', updated_at = ? WHERE id = ?`).run(ts, id);
 
@@ -296,6 +337,9 @@ const restoreMemory = db.transaction(({ id, actor = 'system' }) => {
 // ─── Status helpers (used by correctionResolver) ─────────────────────────────
 
 function setStatus(id, status, actor, notes) {
+  if (!['active', 'superseded', 'deleted'].includes(status)) {
+    throw new Error(`Invalid memory status "${status}"`);
+  }
   const ts = now();
   const existing = db.prepare('SELECT status FROM memories WHERE id = ?').get(id);
   if (!existing) return;
@@ -305,13 +349,99 @@ function setStatus(id, status, actor, notes) {
   logEvent({
     memoryId: id,
     eventType: status === 'superseded' ? 'superseded'
-             : status === 'contradicted' ? 'contradiction_flagged'
+             : status === 'deleted' ? 'deleted'
+             : status === 'active' ? 'restored'
              : 'updated',
     oldValue: { status: existing.status },
     newValue: { status },
     actor,
     notes,
   });
+}
+
+const createSupersession = db.transaction(({
+  oldMemoryId,
+  newMemoryId,
+  reason,
+  actor = 'system',
+  supersededAt = now(),
+}) => {
+  if (oldMemoryId === newMemoryId) {
+    throw new Error('A memory cannot supersede itself.');
+  }
+
+  const oldMem = db.prepare('SELECT * FROM memories WHERE id = ?').get(oldMemoryId);
+  const newMem = db.prepare('SELECT * FROM memories WHERE id = ?').get(newMemoryId);
+  if (!oldMem) throw new Error(`Memory ${oldMemoryId} not found`);
+  if (!newMem) throw new Error(`Memory ${newMemoryId} not found`);
+  if (oldMem.status === 'deleted') throw new Error('Cannot supersede a deleted memory.');
+
+  setStatus(oldMemoryId, 'superseded', actor, reason);
+  db.prepare(
+    `INSERT OR IGNORE INTO memory_supersessions
+     (id, old_memory_id, new_memory_id, reason, superseded_at, superseded_by)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(uuidv4(), oldMemoryId, newMemoryId, reason, supersededAt, actor);
+
+  return {
+    old_memory_id: oldMemoryId,
+    new_memory_id: newMemoryId,
+    reason,
+    action: 'superseded',
+  };
+});
+
+const recordAmbiguousConflict = db.transaction(({
+  memoryId,
+  relatedMemoryId,
+  reason,
+  actor = 'system',
+}) => {
+  if (memoryId === relatedMemoryId) {
+    throw new Error('A memory cannot conflict with itself.');
+  }
+
+  const ts = now();
+  db.prepare(
+    `INSERT OR IGNORE INTO memory_conflicts
+     (id, memory_id, related_memory_id, conflict_type, reason, created_at)
+     VALUES (?, ?, ?, 'ambiguous', ?, ?)`
+  ).run(uuidv4(), memoryId, relatedMemoryId, reason, ts);
+
+  db.prepare(
+    `INSERT OR IGNORE INTO memory_conflicts
+     (id, memory_id, related_memory_id, conflict_type, reason, created_at)
+     VALUES (?, ?, ?, 'ambiguous', ?, ?)`
+  ).run(uuidv4(), relatedMemoryId, memoryId, reason, ts);
+
+  logEvent({
+    memoryId,
+    eventType: 'contradiction_flagged',
+    newValue: { related_memory_id: relatedMemoryId, conflict_type: 'ambiguous' },
+    actor,
+    notes: reason,
+  });
+  logEvent({
+    memoryId: relatedMemoryId,
+    eventType: 'contradiction_flagged',
+    newValue: { related_memory_id: memoryId, conflict_type: 'ambiguous' },
+    actor,
+    notes: reason,
+  });
+
+  return { memory_id: memoryId, related_memory_id: relatedMemoryId, conflict_type: 'ambiguous', reason };
+});
+
+function getConflicts(memoryId) {
+  return db
+    .prepare(
+      `SELECT c.*, m.content AS related_content, m.topic AS related_topic, m.status AS related_status
+       FROM memory_conflicts c
+       JOIN memories m ON m.id = c.related_memory_id
+       WHERE c.memory_id = ? AND c.resolved_at IS NULL
+       ORDER BY c.created_at ASC, c.related_memory_id ASC`
+    )
+    .all(memoryId);
 }
 
 module.exports = {
@@ -324,4 +454,7 @@ module.exports = {
   setStatus,
   logEvent,
   fetchTags,
+  createSupersession,
+  recordAmbiguousConflict,
+  getConflicts,
 };

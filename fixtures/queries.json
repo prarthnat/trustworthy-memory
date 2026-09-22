@@ -1,0 +1,22 @@
+[
+  { "id": "q_001", "query": "Where does the user live now?", "topic": "user.location.home_city", "tags": ["location"], "limit": 5 },
+  { "id": "q_002", "query": "Did the user previously move to Mumbai?", "topic": "user.location.home_city", "include_superseded": true, "limit": 5 },
+  { "id": "q_003", "query": "What IDE does the user prefer?", "topic": "user.preference.ide.primary", "tags": ["ide"], "limit": 5 },
+  { "id": "q_004", "query": "Does the user use Cursor?", "topic": "user.tool.ide", "tags": ["ide"], "limit": 5 },
+  { "id": "q_005", "query": "What is the user's favorite programming language?", "topic": "user.preference.language.favorite", "tags": ["language"], "limit": 5 },
+  { "id": "q_006", "query": "What language has the user been enjoying recently?", "topic": "user.preference.language.recent_interest", "tags": ["language"], "limit": 5 },
+  { "id": "q_007", "query": "Where does the user work now?", "topic": "user.work.employer.current", "tags": ["work"], "limit": 5 },
+  { "id": "q_008", "query": "What is the user's current diet?", "topic": "user.diet.current", "tags": ["diet"], "limit": 5 },
+  { "id": "q_009", "query": "What theme does the user prefer?", "topic": "user.preference.ui.theme", "tags": ["ui"], "limit": 5 },
+  { "id": "q_010", "query": "What unit system should be used?", "topic": "user.preference.units", "limit": 5 },
+  { "id": "q_011", "query": "How should billing notifications be sent?", "topic": "user.preference.notifications.billing", "tags": ["notifications"], "limit": 5 },
+  { "id": "q_012", "query": "Should marketing emails be sent?", "topic": "user.preference.notifications.marketing", "tags": ["notifications"], "limit": 5 },
+  { "id": "q_013", "query": "What timezone is the user in?", "topic": "user.profile.timezone", "limit": 5 },
+  { "id": "q_014", "query": "What is the user's name?", "topic": "user.profile.name", "limit": 5 },
+  { "id": "q_015", "query": "Does the user have peanut allergies?", "topic": "user.health.allergy", "limit": 5 },
+  { "id": "q_016", "query": "What is the Caygnus tech stack?", "topic": "user.project.caygnus.stack", "tags": ["project"], "limit": 5 },
+  { "id": "q_017", "query": "What database does Caygnus use?", "topic": "user.project.caygnus.database", "tags": ["project"], "limit": 5 },
+  { "id": "q_018", "query": "What retrieval requirement matters for Caygnus?", "topic": "user.project.caygnus.requirement", "tags": ["project"], "limit": 5 },
+  { "id": "q_019", "query": "What city was deleted from location history?", "topic": "user.location.previous_city", "limit": 5 },
+  { "id": "q_020", "query": "What are the user's meeting time preferences?", "topic": "user.preference.calendar", "limit": 5 }
+]

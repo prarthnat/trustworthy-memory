@@ -1,5 +1,12 @@
 import React, { useState } from 'react';
 import { apiClient } from '../../api/client';
+import {
+  explainWhySelected,
+  formatRetrievalEvidence,
+  formatTimestamp,
+  getStatusColor,
+  statusLabel,
+} from '../../utils/reviewerHelpers';
 
 export default function RetrievalExplorer() {
   const [query, setQuery] = useState('');
@@ -17,8 +24,8 @@ export default function RetrievalExplorer() {
       const payload = {
         query,
         topic: topic || undefined,
-        tags: tags ? tags.split(',').map(t => t.trim()) : undefined,
-        include_superseded: includeSuperseded
+        tags: tags ? tags.split(',').map((t) => t.trim()) : undefined,
+        include_superseded: includeSuperseded,
       };
       const data = await apiClient.retrieve(payload);
       setResults(data);
@@ -37,9 +44,9 @@ export default function RetrievalExplorer() {
       <div>Tags Match: {exp.tag_matches.length > 0 ? exp.tag_matches.join(',') : 'none'} ({exp.tag_score})</div>
       <div>Keywords: {exp.keyword_matches.length > 0 ? exp.keyword_matches.join(',') : 'none'} ({exp.keyword_score})</div>
       <div>Recency: {exp.recency_days} days ago ({exp.recency_score})</div>
-      <div>Confidence Wt: {exp.confidence_weight}</div>
-      {exp.status_penalty > 0 && <div style={{color: '#fc8181'}}>Status Penalty: -{exp.status_penalty}</div>}
-      <div style={{fontWeight: 'bold', marginTop: '0.25rem', borderTop: '1px solid #4a5568', paddingTop: '0.25rem'}}>
+      <div>Provenance Wt: {exp.provenance_score}</div>
+      {exp.status_penalty > 0 && <div style={{ color: '#fc8181' }}>Status Penalty: -{exp.status_penalty}</div>}
+      <div style={{ fontWeight: 'bold', marginTop: '0.25rem', borderTop: '1px solid #4a5568', paddingTop: '0.25rem' }}>
         Final Score: {exp.final_score}
       </div>
     </div>
@@ -54,22 +61,22 @@ export default function RetrievalExplorer() {
             type="text"
             placeholder="Search query..."
             value={query}
-            onChange={e => setQuery(e.target.value)}
-            style={{...styles.input, fontSize: '1.1rem'}}
+            onChange={(e) => setQuery(e.target.value)}
+            style={{ ...styles.input, fontSize: '1.1rem' }}
           />
           <div style={styles.row}>
             <input
               type="text"
               placeholder="Topic filter"
               value={topic}
-              onChange={e => setTopic(e.target.value)}
+              onChange={(e) => setTopic(e.target.value)}
               style={styles.input}
             />
             <input
               type="text"
               placeholder="Tags (comma separated)"
               value={tags}
-              onChange={e => setTags(e.target.value)}
+              onChange={(e) => setTags(e.target.value)}
               style={styles.input}
             />
           </div>
@@ -77,7 +84,7 @@ export default function RetrievalExplorer() {
             <input
               type="checkbox"
               checked={includeSuperseded}
-              onChange={e => setIncludeSuperseded(e.target.checked)}
+              onChange={(e) => setIncludeSuperseded(e.target.checked)}
             />
             Include superseded memories
           </label>
@@ -96,27 +103,55 @@ export default function RetrievalExplorer() {
               Showing top {results.results.length} of {results.total_candidates} candidates (Log ID: {results.retrieval_log_id})
             </span>
           </div>
-          
+
           <div style={styles.list}>
             {results.results.map((r, i) => (
               <div key={r.memory_id} style={styles.card}>
                 <div style={styles.cardHeader}>
                   <div style={styles.rank}>#{i + 1}</div>
                   <div style={styles.score}>{r.score.toFixed(4)}</div>
-                  {r.status !== 'active' && <span style={styles.badge}>{r.status}</span>}
+                  <span
+                    style={{
+                      ...styles.statusBadge,
+                      backgroundColor: getStatusColor(r.status),
+                    }}
+                  >
+                    {statusLabel(r.status)}
+                  </span>
                 </div>
+
+                <div style={styles.idRow}>
+                  <span style={styles.idLabel}>Memory ID</span>
+                  <span style={styles.idValue}>{r.memory_id}</span>
+                </div>
+
                 <p style={styles.content}>{r.content}</p>
+
                 <div style={styles.meta}>
                   <span style={styles.topic}>{r.topic}</span>
                   <span>{r.source} ({r.source_type})</span>
+                  <span>Created: {formatTimestamp(r.created_at)}</span>
                 </div>
+
+                <div style={styles.whySection}>
+                  <h4 style={styles.sectionTitle}>Why this memory was selected</h4>
+                  <p style={styles.whyText}>
+                    {explainWhySelected(r, {
+                      topicFilter: topic || undefined,
+                      tagsFilter: tags ? tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
+                    })}
+                  </p>
+                </div>
+
                 <div style={styles.explanationSection}>
-                  <h4 style={{fontSize: '0.85rem', marginBottom: '0.5rem', color: '#a0aec0'}}>Scoring Explanation</h4>
+                  <h4 style={styles.sectionTitle}>Retrieval Evidence</h4>
+                  <pre style={styles.evidencePre}>{formatRetrievalEvidence(r)}</pre>
+                  <h4 style={{ ...styles.sectionTitle, marginTop: '1rem' }}>Scoring breakdown</h4>
                   <ScoreBreakdown exp={r.explanation} />
                 </div>
               </div>
             ))}
-            {results.results.length === 0 && <p style={{color: '#a0aec0'}}>No matching memories found.</p>}
+            {results.results.length === 0 && <p style={{ color: '#a0aec0' }}>No matching memories found.</p>}
           </div>
         </div>
       )}
@@ -125,7 +160,7 @@ export default function RetrievalExplorer() {
 }
 
 const styles = {
-  container: { display: 'flex', flexDirection: 'column', gap: '2rem', maxWidth: '900px', margin: '0 auto' },
+  container: { display: 'flex', flexDirection: 'column', gap: '2rem', maxWidth: '960px', margin: '0 auto' },
   panel: { backgroundColor: '#2d3748', padding: '1.5rem', borderRadius: '8px' },
   resultsPanel: { padding: '0', borderRadius: '8px' },
   title: { fontSize: '1.25rem', marginBottom: '1rem', fontWeight: '600' },
@@ -135,17 +170,24 @@ const styles = {
   input: { flex: 1, padding: '0.75rem', borderRadius: '4px', border: '1px solid #4a5568', backgroundColor: '#1a202c', color: 'white' },
   checkboxLabel: { display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.9rem', color: '#e2e8f0', cursor: 'pointer' },
   submitBtn: { padding: '0.75rem', borderRadius: '4px', backgroundColor: '#48bb78', color: 'white', border: 'none', fontWeight: 'bold', cursor: 'pointer', fontSize: '1rem' },
-  resultsHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1rem' },
+  resultsHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' },
   stats: { fontSize: '0.85rem', color: '#a0aec0' },
   list: { display: 'flex', flexDirection: 'column', gap: '1rem' },
-  card: { backgroundColor: '#1a202c', border: '1px solid #4a5568', borderRadius: '8px', padding: '1.5rem', position: 'relative' },
-  cardHeader: { display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '1rem' },
+  card: { backgroundColor: '#1a202c', border: '1px solid #4a5568', borderRadius: '8px', padding: '1.5rem' },
+  cardHeader: { display: 'flex', gap: '1rem', alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' },
   rank: { backgroundColor: '#4a5568', color: 'white', padding: '0.25rem 0.5rem', borderRadius: '4px', fontWeight: 'bold' },
   score: { color: '#48bb78', fontWeight: 'bold', fontSize: '1.2rem' },
-  badge: { padding: '0.2rem 0.5rem', borderRadius: '4px', fontSize: '0.75rem', fontWeight: 'bold', textTransform: 'uppercase', backgroundColor: '#ed8936', color: 'black' },
+  statusBadge: { padding: '0.25rem 0.6rem', borderRadius: '4px', fontSize: '0.75rem', fontWeight: '800', color: '#1a202c' },
+  idRow: { display: 'flex', gap: '0.5rem', alignItems: 'baseline', marginBottom: '0.75rem', fontSize: '0.85rem' },
+  idLabel: { color: '#718096', textTransform: 'uppercase', fontSize: '0.7rem', fontWeight: '600' },
+  idValue: { fontFamily: 'monospace', color: '#90cdf4', wordBreak: 'break-all' },
   content: { fontSize: '1.2rem', marginBottom: '1rem', lineHeight: '1.4' },
-  meta: { display: 'flex', gap: '1rem', fontSize: '0.85rem', color: '#a0aec0', marginBottom: '1.5rem', borderBottom: '1px solid #2d3748', paddingBottom: '1rem' },
+  meta: { display: 'flex', gap: '1rem', fontSize: '0.85rem', color: '#a0aec0', marginBottom: '1rem', flexWrap: 'wrap', borderBottom: '1px solid #2d3748', paddingBottom: '1rem' },
   topic: { fontFamily: 'monospace', color: '#90cdf4' },
+  whySection: { backgroundColor: '#234e52', border: '1px solid #319795', borderRadius: '6px', padding: '1rem', marginBottom: '1rem' },
+  whyText: { margin: 0, lineHeight: '1.5', color: '#e6fffa', fontSize: '0.95rem' },
+  sectionTitle: { fontSize: '0.85rem', marginBottom: '0.5rem', color: '#a0aec0', textTransform: 'uppercase', letterSpacing: '0.03em' },
   explanationSection: { backgroundColor: '#2d3748', padding: '1rem', borderRadius: '4px' },
-  breakdown: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem', color: '#cbd5e0', fontFamily: 'monospace' }
+  evidencePre: { margin: 0, fontSize: '0.8rem', color: '#cbd5e0', fontFamily: 'monospace', whiteSpace: 'pre-wrap' },
+  breakdown: { display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', fontSize: '0.85rem', color: '#cbd5e0', fontFamily: 'monospace' },
 };

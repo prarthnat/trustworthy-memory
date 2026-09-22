@@ -1,188 +1,119 @@
 /**
- * correctionResolver.test.js — Unit tests for the conflict classification rules.
- *
- * classify() is a pure function (no DB side effects), so these tests
- * are blazing fast and completely deterministic.
+ * Unit tests for deterministic reconciliation policy.
  */
 
 import { describe, it, expect } from 'vitest';
-import { classify } from '../../src/services/correctionResolver.js';
+import { classify, canonicalKey } from '../../src/services/correctionResolver.js';
 
 const base = {
-  id:          'existing-001',
-  content:     'User prefers light mode',
-  topic:       'user.preferences',
-  source:      'settings-panel',
-  source_type: 'system',
-  confidence:  1.0,
-  status:      'active',
+  id: 'existing-001',
+  content: 'I live in Pune',
+  topic: 'user.location.home_city',
+  source: 'chat',
+  source_type: 'user',
+  confidence: 1.0,
+  status: 'active',
   valid_until: null,
+  tags: ['location', 'home_city', 'pune'],
+  metadata: {},
 };
 
-// ─── Rule 1: Duplicate ────────────────────────────────────────────────────────
+describe('canonical keys', () => {
+  it('uses metadata canonical_key when present', () => {
+    const memory = { ...base, metadata: { canonical_key: 'user.location.home_city' } };
+    expect(canonicalKey(memory)).toBe('user.location.home_city');
+  });
 
-describe('Rule 1 — EXACT_CONTENT_MATCH', () => {
+  it('falls back to topic', () => {
+    expect(canonicalKey(base)).toBe('user.location.home_city');
+  });
+});
+
+describe('explicit correction policy', () => {
   it('classifies identical content as duplicate', () => {
-    const incoming = { ...base, id: 'new-001', content: 'User prefers light mode' };
+    const incoming = { ...base, id: 'new-001', content: '  I LIVE IN PUNE  ' };
     const decision = classify(base, incoming);
     expect(decision.action).toBe('duplicate');
     expect(decision.rule).toBe('EXACT_CONTENT_MATCH');
   });
 
-  it('is case-insensitive and trims whitespace', () => {
-    const incoming = { ...base, id: 'new-001', content: '  USER PREFERS LIGHT MODE  ' };
-    expect(classify(base, incoming).action).toBe('duplicate');
-  });
-});
-
-// ─── Rule 2: High-confidence correction ──────────────────────────────────────
-
-describe('Rule 2 — HIGH_CONFIDENCE_CORRECTION', () => {
-  it('supersedes when user source + confidence >= 0.9 + same topic', () => {
+  it('supersedes when user replaces the same canonical single-valued fact', () => {
     const incoming = {
       ...base,
-      id:          'new-002',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  1.0,
+      id: 'new-002',
+      content: 'I moved to Mumbai',
+      tags: ['location', 'home_city', 'mumbai'],
     };
     const decision = classify(base, incoming);
     expect(decision.action).toBe('supersede');
-    expect(decision.rule).toBe('HIGH_CONFIDENCE_CORRECTION');
+    expect(decision.rule).toBe('EXPLICIT_CANONICAL_REPLACEMENT');
   });
 
-  it('does NOT supersede when confidence < 0.9', () => {
+  it('does not supersede a different canonical fact on the same broad domain', () => {
     const incoming = {
       ...base,
-      id:          'new-002b',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  0.7,
+      id: 'new-003',
+      content: 'I visited Mumbai last week',
+      topic: 'user.travel.history',
+      tags: ['travel', 'mumbai'],
     };
-    const decision = classify(base, incoming);
-    expect(decision.action).not.toBe('supersede');
+    expect(classify(base, incoming).action).toBe('accept');
+  });
+
+  it('treats historical memories as non-authoritative candidates', () => {
+    const existing = { ...base, status: 'superseded' };
+    const incoming = { ...base, id: 'new-004', content: 'I moved to Mumbai' };
+    const decision = classify(existing, incoming);
+    expect(decision.action).toBe('accept');
+    expect(decision.rule).toBe('ONLY_ACTIVE_MEMORIES_RECONCILED');
   });
 });
 
-// ─── Rule 3: Temporal expiry ──────────────────────────────────────────────────
-
-describe('Rule 3 — TEMPORAL_SUPERSESSION', () => {
-  it('supersedes when existing memory is expired', () => {
-    const expired = { ...base, valid_until: Date.now() - 1000 }; // expired 1 sec ago
+describe('ambiguous conflicts', () => {
+  it('annotates recent language interest instead of replacing favorite language', () => {
+    const existing = {
+      ...base,
+      id: 'lang-001',
+      content: 'My favorite programming language is JavaScript',
+      topic: 'user.preference.language.favorite',
+      tags: ['language', 'favorite', 'javascript'],
+    };
     const incoming = {
       ...base,
-      id:          'new-003',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  0.5, // even low confidence
+      id: 'lang-002',
+      content: 'I have been enjoying Python recently',
+      topic: 'user.preference.language.recent_interest',
+      tags: ['language', 'python', 'recent_interest'],
     };
-    const decision = classify(expired, incoming);
-    expect(decision.action).toBe('supersede');
-    expect(decision.rule).toBe('TEMPORAL_SUPERSESSION');
+    const decision = classify(existing, incoming);
+    expect(decision.action).toBe('annotate_conflict');
+    expect(decision.rule).toBe('AMBIGUOUS_NON_REPLACEMENT');
   });
 
-  it('does NOT supersede when valid_until is in the future', () => {
-    const notExpired = { ...base, valid_until: Date.now() + 86400000 };
+  it('annotates occasional Cursor use instead of replacing primary IDE', () => {
+    const existing = {
+      ...base,
+      id: 'ide-001',
+      content: 'My preferred IDE is VS Code',
+      topic: 'user.preference.ide.primary',
+      tags: ['ide', 'primary', 'vscode'],
+    };
     const incoming = {
       ...base,
-      id:          'new-003b',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  0.5,
+      id: 'ide-002',
+      content: 'I sometimes use Cursor',
+      topic: 'user.tool.ide.secondary',
+      tags: ['ide', 'secondary', 'cursor'],
     };
-    const decision = classify(notExpired, incoming);
-    expect(decision.action).not.toBe('supersede');
-  });
-});
-
-// ─── Rule 4: User over system ─────────────────────────────────────────────────
-
-describe('Rule 4 — SYSTEM_VS_USER', () => {
-  it('supersedes system memory when new is user-sourced', () => {
-    const systemMem = { ...base, source_type: 'system', confidence: 0.5 };
-    const incoming = {
-      ...base,
-      id:          'new-004',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  0.5, // low confidence but still user > system
-    };
-    const decision = classify(systemMem, incoming);
-    expect(decision.action).toBe('supersede');
-    expect(decision.rule).toBe('SYSTEM_VS_USER');
-  });
-
-  it('does NOT apply when existing is also user-sourced', () => {
-    const userMem = { ...base, source_type: 'user', confidence: 0.5 };
-    const incoming = { ...base, id: 'new-004b', content: 'Conflicting content', source_type: 'user', confidence: 0.5 };
-    const decision = classify(userMem, incoming);
-    expect(decision.rule).not.toBe('SYSTEM_VS_USER');
+    expect(classify(existing, incoming).action).toBe('annotate_conflict');
   });
 });
 
-// ─── Rule 5: Conservative contradiction ──────────────────────────────────────
-
-describe('Rule 5 — LOWER_CONFIDENCE_CONFLICT', () => {
-  it('flags contradiction for inferred source type', () => {
-    const incoming = {
-      ...base,
-      id:          'new-005',
-      content:     'User prefers dark mode',
-      source_type: 'inferred',
-      confidence:  0.9,
-      source:      'different-source',
-    };
-    const decision = classify({ ...base, source_type: 'user' }, incoming);
-    expect(decision.action).toBe('contradict');
-    expect(decision.rule).toBe('LOWER_CONFIDENCE_CONFLICT');
-  });
-
-  it('flags contradiction for low confidence (< 0.9)', () => {
-    const incoming = {
-      ...base,
-      id:          'new-005b',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  0.5,
-      source:      'different-source',
-    };
-    const decision = classify({ ...base, source_type: 'user' }, incoming);
-    expect(decision.action).toBe('contradict');
-  });
-});
-
-// ─── Rule 6: Same-source update ──────────────────────────────────────────────
-
-describe('Rule 6 — SAME_SOURCE_UPDATE', () => {
-  it('updates in place when same source, different content', () => {
-    const incoming = {
-      ...base,
-      id:      'new-006',
-      content: 'User prefers dark mode',
-      // same source: 'settings-panel', same topic, different content
-    };
-    const decision = classify(base, incoming);
-    expect(decision.action).toBe('update_in_place');
-    expect(decision.rule).toBe('SAME_SOURCE_UPDATE');
-  });
-});
-
-// ─── Determinism ──────────────────────────────────────────────────────────────
-
-describe('Determinism', () => {
-  it('classify always returns the same result for the same inputs', () => {
-    const incoming = {
-      ...base,
-      id:          'new-det',
-      content:     'User prefers dark mode',
-      source_type: 'user',
-      confidence:  1.0,
-    };
-    const d1 = classify(base, incoming);
-    const d2 = classify(base, incoming);
-    const d3 = classify(base, incoming);
-    expect(d1.action).toBe(d2.action);
-    expect(d2.action).toBe(d3.action);
-    expect(d1.rule).toBe(d2.rule);
+describe('determinism', () => {
+  it('returns the same decision for the same inputs', () => {
+    const incoming = { ...base, id: 'new-det', content: 'I moved to Mumbai' };
+    const decisions = [classify(base, incoming), classify(base, incoming), classify(base, incoming)];
+    expect(decisions[0]).toEqual(decisions[1]);
+    expect(decisions[1]).toEqual(decisions[2]);
   });
 });

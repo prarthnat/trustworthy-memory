@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS memories (
   source_type   TEXT NOT NULL CHECK(source_type IN ('user','system','inferred')),
   confidence    REAL NOT NULL DEFAULT 1.0 CHECK(confidence >= 0.0 AND confidence <= 1.0),
   status        TEXT NOT NULL DEFAULT 'active'
-                  CHECK(status IN ('active','superseded','deleted','contradicted')),
+                  CHECK(status IN ('active','superseded','deleted')),
   created_at    INTEGER NOT NULL,
   updated_at    INTEGER NOT NULL,
   valid_from    INTEGER,
@@ -27,7 +27,22 @@ CREATE TABLE IF NOT EXISTS memory_supersessions (
   new_memory_id   TEXT NOT NULL REFERENCES memories(id),
   reason          TEXT NOT NULL,
   superseded_at   INTEGER NOT NULL,
-  superseded_by   TEXT NOT NULL
+  superseded_by   TEXT NOT NULL,
+  CHECK(old_memory_id != new_memory_id),
+  UNIQUE(old_memory_id, new_memory_id)
+);
+
+-- Ambiguous conflicts are annotations, not lifecycle states.
+CREATE TABLE IF NOT EXISTS memory_conflicts (
+  id                 TEXT PRIMARY KEY,
+  memory_id          TEXT NOT NULL REFERENCES memories(id),
+  related_memory_id  TEXT NOT NULL REFERENCES memories(id),
+  conflict_type      TEXT NOT NULL CHECK(conflict_type IN ('ambiguous')),
+  reason             TEXT NOT NULL,
+  created_at         INTEGER NOT NULL,
+  resolved_at        INTEGER,
+  CHECK(memory_id != related_memory_id),
+  UNIQUE(memory_id, related_memory_id, conflict_type)
 );
 
 -- Normalised many-to-many tags
@@ -60,7 +75,8 @@ CREATE TABLE IF NOT EXISTS retrieval_log (
   filters      TEXT DEFAULT '{}',
   results      TEXT NOT NULL DEFAULT '[]',
   retrieved_at INTEGER NOT NULL,
-  context      TEXT
+  context      TEXT,
+  scorer       TEXT DEFAULT '{}'
 );
 
 -- Benchmark definitions and last-run results
@@ -86,3 +102,4 @@ CREATE INDEX IF NOT EXISTS idx_retrieval_at      ON retrieval_log(retrieved_at);
 CREATE INDEX IF NOT EXISTS idx_tags_tag          ON memory_tags(tag, memory_id);
 CREATE INDEX IF NOT EXISTS idx_supersessions_old ON memory_supersessions(old_memory_id);
 CREATE INDEX IF NOT EXISTS idx_supersessions_new ON memory_supersessions(new_memory_id);
+CREATE INDEX IF NOT EXISTS idx_conflicts_memory  ON memory_conflicts(memory_id, created_at);

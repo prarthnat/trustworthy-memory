@@ -3,14 +3,14 @@
  *
  * SCORING FORMULA (all components normalised to [0, 1]):
  *
- *   score = W_topic    × topicScore
- *         + W_tags     × tagScore
- *         + W_keywords × keywordScore
- *         + W_recency  × recencyScore
- *         + W_confidence × confidence
+ *   score = W_category   × categoryScore
+ *         + W_keywords   × keywordScore
+ *         + W_tags       × tagScore
+ *         + W_recency    × recencyScore
+ *         + W_provenance × provenanceScore
  *         − statusPenalty
  *
- * Tie-breaking: created_at DESC, then id ASC (total ordering → pure determinism).
+ * Tie-breaking: status rank, updated_at DESC, created_at DESC, then id ASC.
  *
  * No randomness, no embeddings, no external calls.
  */
@@ -23,14 +23,16 @@ const db = require('../db/db');
 // ─── Default weights (configurable via process.env) ──────────────────────────
 
 const WEIGHTS = {
-  topic:      parseFloat(process.env.W_TOPIC      || '0.40'),
-  tags:       parseFloat(process.env.W_TAGS       || '0.20'),
+  category:   parseFloat(process.env.W_CATEGORY   || process.env.W_TOPIC || '0.40'),
   keywords:   parseFloat(process.env.W_KEYWORDS   || '0.25'),
+  tags:       parseFloat(process.env.W_TAGS       || '0.15'),
   recency:    parseFloat(process.env.W_RECENCY    || '0.10'),
-  confidence: parseFloat(process.env.W_CONFIDENCE || '0.05'),
+  provenance: parseFloat(process.env.W_PROVENANCE || '0.10'),
 };
-const STATUS_PENALTY_CONTRADICTED = 0.30;
+const SCORER_VERSION = 'deterministic-v2';
 const HALF_LIFE_DAYS = parseFloat(process.env.HALF_LIFE_DAYS || '30');
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 25;
 
 // ─── Stop words ───────────────────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ function topicMatch(queryTopic, memTopic) {
   const qParts = q.split('.');
   const mParts = m.split('.');
   const shared = qParts.filter((p, i) => mParts[i] === p).length;
-  if (shared > 0) return { score: 0.3 * (shared / Math.max(qParts.length, mParts.length)), matchType: 'partial' };
+  if (shared > 0) return { score: 0.25 * (shared / Math.max(qParts.length, mParts.length)), matchType: 'partial' };
 
   return { score: 0.0, matchType: 'none' };
 }
@@ -114,7 +116,7 @@ function tokenise(text) {
 function keywordScore(queryText, contentText) {
   if (!queryText) return { score: 0, matches: [] };
 
-  const qTokens = tokenise(queryText);
+  const qTokens = [...new Set(tokenise(queryText))];
   if (qTokens.length === 0) return { score: 0, matches: [] };
 
   const cTokens = new Set(tokenise(contentText));
@@ -133,8 +135,8 @@ function keywordScore(queryText, contentText) {
  * @param {number} createdAt - Unix ms timestamp
  * @returns {{ score: number, daysSinceCreated: number }}
  */
-function recencyScore(createdAt) {
-  const daysSinceCreated = (Date.now() - createdAt) / (1000 * 60 * 60 * 24);
+function recencyScore(createdAt, nowMs = Date.now()) {
+  const daysSinceCreated = Math.max(0, (nowMs - createdAt) / (1000 * 60 * 60 * 24));
   const score = 1 / (1 + daysSinceCreated / HALF_LIFE_DAYS);
   return { score, daysSinceCreated: Math.round(daysSinceCreated) };
 }
@@ -142,9 +144,33 @@ function recencyScore(createdAt) {
 // ─── Status penalty ───────────────────────────────────────────────────────────
 
 function statusPenalty(status) {
-  if (status === 'contradicted') return STATUS_PENALTY_CONTRADICTED;
   if (status === 'superseded')   return 0.50; // heavily penalised
   return 0;
+}
+
+function provenanceScore(sourceType) {
+  if (sourceType === 'user') return 1.0;
+  if (sourceType === 'system') return 0.7;
+  if (sourceType === 'inferred') return 0.4;
+  return 0.0;
+}
+
+function statusRank(status) {
+  if (status === 'active') return 0;
+  if (status === 'superseded') return 1;
+  return 2;
+}
+
+function evidenceLabels({ category, tags, kw, memory, penalty }) {
+  const evidence = [];
+  if (category.matchType !== 'none') evidence.push('topic_match');
+  if (kw.matches.length > 0) evidence.push('keyword_match');
+  if (tags.matches.length > 0) evidence.push('tag_match');
+  if (memory.status === 'active') evidence.push('status_active');
+  if (memory.status === 'superseded') evidence.push('status_superseded');
+  if (memory.source_type) evidence.push(`source_${memory.source_type}`);
+  if (penalty > 0) evidence.push('status_penalty');
+  return evidence;
 }
 
 // ─── Main score function (exported for unit tests) ───────────────────────────
@@ -158,38 +184,68 @@ function statusPenalty(status) {
  * @returns {{ score: number, explanation: object }}
  */
 function computeScore(query, memory, weights = WEIGHTS) {
+  const nowMs   = query.now || Date.now();
   const topic   = topicMatch(query.topic, memory.topic);
   const tags    = tagScore(query.tags || [], memory.tags || []);
-  const kw      = keywordScore(query.query, memory.content);
-  const recency = recencyScore(memory.created_at);
+  const keywordCorpus = [
+    memory.content,
+    memory.topic,
+    ...(memory.tags || []),
+    memory.metadata?.canonical_key || '',
+  ].join(' ');
+  const kw      = keywordScore(query.query, keywordCorpus);
+  const recency = recencyScore(memory.updated_at || memory.created_at, nowMs);
+  const provenance = provenanceScore(memory.source_type);
   const penalty = statusPenalty(memory.status);
 
   const raw =
-    weights.topic      * topic.score   +
-    weights.tags       * tags.score    +
-    weights.keywords   * kw.score      +
-    weights.recency    * recency.score +
-    weights.confidence * memory.confidence;
+    weights.category   * topic.score      +
+    weights.keywords   * kw.score         +
+    weights.tags       * tags.score       +
+    weights.recency    * recency.score    +
+    weights.provenance * provenance;
 
-  const score = Math.max(0, Math.min(1, raw - penalty));
+  const score = round(Math.max(0, Math.min(1, raw - penalty)));
+  const matchedFields = [];
+  if (topic.matchType !== 'none') matchedFields.push('topic');
+  if (kw.matches.length > 0) matchedFields.push('content');
+  if (tags.matches.length > 0) matchedFields.push('tags');
 
-  const explanation = {
-    topic_match:      topic.matchType !== 'none',
-    topic_match_type: topic.matchType,
-    topic_score:      round(topic.score),
-    tag_matches:      tags.matches,
-    tag_score:        round(tags.score),
-    keyword_matches:  kw.matches,
-    keyword_score:    round(kw.score),
-    recency_days:     recency.daysSinceCreated,
-    recency_score:    round(recency.score),
-    confidence_weight: memory.confidence,
-    status_penalty:   penalty,
-    raw_score:        round(raw),
-    final_score:      round(score),
+  const retrievalEvidence = {
+    scorer_version: SCORER_VERSION,
+    category: { type: topic.matchType, score: round(topic.score) },
+    keywords: { matched: kw.matches, score: round(kw.score) },
+    tags: { matched: tags.matches, score: round(tags.score) },
+    recency: { age_days: recency.daysSinceCreated, score: round(recency.score) },
+    provenance: { source_type: memory.source_type, score: provenance },
+    status: { status: memory.status, penalty },
+    raw_score: round(raw),
+    final_score: round(score),
   };
 
-  return { score, explanation };
+  const explanation = {
+    topic_match: topic.matchType !== 'none',
+    topic_match_type: topic.matchType,
+    topic_score: round(topic.score),
+    tag_matches: tags.matches,
+    tag_score: round(tags.score),
+    keyword_matches: kw.matches,
+    keyword_score: round(kw.score),
+    recency_days: recency.daysSinceCreated,
+    recency_score: round(recency.score),
+    provenance_score: provenance,
+    status_penalty: penalty,
+    raw_score: round(raw),
+    final_score: round(score),
+  };
+
+  return {
+    score,
+    matched_fields: matchedFields,
+    evidence: evidenceLabels({ category: topic, tags, kw, memory, penalty }),
+    retrieval_evidence: retrievalEvidence,
+    explanation,
+  };
 }
 
 function round(n) {
@@ -218,7 +274,7 @@ function retrieve(query) {
     tags = [],
     source_type,
     include_superseded = false,
-    limit = 10,
+    limit = DEFAULT_LIMIT,
     context,
   } = query;
 
@@ -230,11 +286,9 @@ function retrieve(query) {
   `;
   const params = [];
 
-  if (!include_superseded) {
-    sql += ` AND m.status IN ('active', 'contradicted')`;
-  } else {
-    sql += ` AND m.status IN ('active', 'contradicted', 'superseded')`;
-  }
+  sql += include_superseded
+    ? ` AND m.status IN ('active', 'superseded')`
+    : ` AND m.status = 'active'`;
 
   if (topic) {
     sql += ` AND (m.topic = ? OR m.topic LIKE ? OR ? LIKE m.topic || '.%')`;
@@ -271,24 +325,33 @@ function retrieve(query) {
 
   // Score all candidates
   const scored = candidates.map((mem) => {
-    const { score, explanation } = computeScore(query, mem);
-    return { memory: mem, score, explanation };
+    const scoredMemory = computeScore(query, mem);
+    return { memory: mem, ...scoredMemory };
   });
 
-  // Sort: score DESC, then created_at DESC, then id ASC (total ordering)
+  // Sort: score DESC, status rank, updated_at DESC, created_at DESC, id ASC.
   scored.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
+    if (statusRank(a.memory.status) !== statusRank(b.memory.status)) {
+      return statusRank(a.memory.status) - statusRank(b.memory.status);
+    }
+    if ((b.memory.updated_at || 0) !== (a.memory.updated_at || 0)) {
+      return (b.memory.updated_at || 0) - (a.memory.updated_at || 0);
+    }
     if (b.memory.created_at !== a.memory.created_at) return b.memory.created_at - a.memory.created_at;
     return a.memory.id.localeCompare(b.memory.id);
   });
 
   const totalCandidates = scored.length;
-  const topResults = scored.slice(0, limit);
+  const boundedLimit = Math.max(1, Math.min(parseInt(limit, 10) || DEFAULT_LIMIT, MAX_LIMIT));
+  const topResults = scored.slice(0, boundedLimit);
 
   // Shape results for response
-  const results = topResults.map(({ memory, score, explanation }) => ({
+  const results = topResults.map(({ memory, score, explanation, evidence, matched_fields, retrieval_evidence }) => ({
     memory_id:    memory.id,
+    memoryId:     memory.id,
     content:      memory.content,
+    memory:       memory.content,
     topic:        memory.topic,
     source:       memory.source,
     source_type:  memory.source_type,
@@ -297,28 +360,33 @@ function retrieve(query) {
     tags:         memory.tags,
     created_at:   memory.created_at,
     score:        round(score),
+    matched_fields,
+    evidence,
+    retrieval_evidence,
     explanation,
   }));
 
   // Log the retrieval
   const logId = uuidv4();
   db.prepare(
-    `INSERT INTO retrieval_log (id, query, filters, results, retrieved_at, context)
-     VALUES (?, ?, ?, ?, ?, ?)`
+    `INSERT INTO retrieval_log (id, query, filters, results, retrieved_at, context, scorer)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(
     logId,
     queryText,
     JSON.stringify({ topic, tags, source_type, include_superseded }),
     JSON.stringify(results),
     Date.now(),
-    context || null
+    context || null,
+    JSON.stringify({ version: SCORER_VERSION, weights: WEIGHTS, half_life_days: HALF_LIFE_DAYS })
   );
 
   return {
     results,
     retrieval_log_id: logId,
     total_candidates: totalCandidates,
-    filters_applied: { topic, tags, source_type, include_superseded },
+    filters_applied: { topic, tags, source_type, include_superseded, limit: boundedLimit },
+    scorer: { version: SCORER_VERSION, weights: WEIGHTS },
   };
 }
 
@@ -332,6 +400,7 @@ function getRetrievalLog(id) {
     ...row,
     filters: JSON.parse(row.filters || '{}'),
     results: JSON.parse(row.results || '[]'),
+    scorer: JSON.parse(row.scorer || '{}'),
   };
 }
 
@@ -343,6 +412,7 @@ function listRetrievalLogs({ limit = 20, offset = 0 } = {}) {
       ...row,
       filters: JSON.parse(row.filters || '{}'),
       results: JSON.parse(row.results || '[]'),
+      scorer: JSON.parse(row.scorer || '{}'),
     }));
 }
 
@@ -355,5 +425,7 @@ module.exports = {
   recencyScore,
   getRetrievalLog,
   listRetrievalLogs,
+  provenanceScore,
   WEIGHTS,
+  SCORER_VERSION,
 };

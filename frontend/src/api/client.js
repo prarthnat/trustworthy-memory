@@ -38,6 +38,12 @@ export const apiClient = {
   }),
   deleteMemory: (id) => fetchJSON(`/memories/${id}`, { method: 'DELETE' }),
   restoreMemory: (id) => fetchJSON(`/memories/${id}/restore`, { method: 'POST' }),
+  getMemory: (id) => fetchJSON(`/memories/${id}`),
+  getSupersessions: (id) => fetchJSON(`/memories/${id}/supersessions`),
+  correctMemory: (memoryData) => fetchJSON('/memories/correct', {
+    method: 'POST',
+    body: JSON.stringify(memoryData),
+  }),
 
   // Retrieval
   retrieve: (queryData) => fetchJSON('/retrieve', {

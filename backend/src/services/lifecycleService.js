@@ -26,7 +26,42 @@ function getLifecycle(memoryId) {
       new_value: e.new_value ? JSON.parse(e.new_value) : null,
     }));
 
-  return { memory, events };
+  const supersedes = db
+    .prepare(
+      `SELECT * FROM memory_supersessions
+       WHERE new_memory_id = ?
+       ORDER BY superseded_at ASC, old_memory_id ASC`
+    )
+    .all(memoryId);
+
+  const supersededBy = db
+    .prepare(
+      `SELECT * FROM memory_supersessions
+       WHERE old_memory_id = ?
+       ORDER BY superseded_at ASC, new_memory_id ASC`
+    )
+    .all(memoryId);
+
+  const conflicts = db
+    .prepare(
+      `SELECT * FROM memory_conflicts
+       WHERE memory_id = ?
+       ORDER BY created_at ASC, related_memory_id ASC`
+    )
+    .all(memoryId);
+
+  return {
+    memory: {
+      ...memory,
+      metadata: memory.metadata ? JSON.parse(memory.metadata) : {},
+    },
+    events,
+    supersession: {
+      supersedes,
+      superseded_by: supersededBy,
+    },
+    conflicts,
+  };
 }
 
 /**

@@ -174,31 +174,35 @@ describe('computeScore', () => {
     expect(good).toBeGreaterThan(bad);
   });
 
-  it('contradicted memory scores lower than active memory (penalty applied)', () => {
+  it('superseded memory scores lower than active memory (penalty applied)', () => {
     const query = { query: 'dark mode', topic: 'user.preferences' };
     const active       = { ...baseMemory, status: 'active' };
-    const contradicted = { ...baseMemory, status: 'contradicted' };
+    const superseded = { ...baseMemory, status: 'superseded' };
     const aScore = computeScore(query, active).score;
-    const cScore = computeScore(query, contradicted).score;
+    const cScore = computeScore(query, superseded).score;
     expect(aScore).toBeGreaterThan(cScore);
   });
 
-  it('higher confidence produces higher score (all else equal)', () => {
+  it('higher provenance trust produces higher score (all else equal)', () => {
     const query       = { query: 'dark mode', topic: 'user.preferences' };
-    const highConf    = { ...baseMemory, confidence: 1.0 };
-    const lowConf     = { ...baseMemory, confidence: 0.1 };
-    expect(computeScore(query, highConf).score).toBeGreaterThan(computeScore(query, lowConf).score);
+    const userMemory  = { ...baseMemory, source_type: 'user' };
+    const inferred    = { ...baseMemory, source_type: 'inferred' };
+    expect(computeScore(query, userMemory).score).toBeGreaterThan(computeScore(query, inferred).score);
   });
 
   it('explanation object contains all expected fields', () => {
     const query = { query: 'dark mode', topic: 'user.preferences' };
-    const { explanation } = computeScore(query, baseMemory);
+    const { explanation, matched_fields, evidence, retrieval_evidence } = computeScore(query, baseMemory);
     expect(explanation).toHaveProperty('topic_match_type');
     expect(explanation).toHaveProperty('keyword_matches');
     expect(explanation).toHaveProperty('tag_matches');
     expect(explanation).toHaveProperty('recency_score');
     expect(explanation).toHaveProperty('final_score');
     expect(explanation).toHaveProperty('status_penalty');
+    expect(matched_fields).toEqual(expect.arrayContaining(['topic', 'content']));
+    expect(evidence).toEqual(expect.arrayContaining(['topic_match', 'keyword_match', 'status_active']));
+    expect(retrieval_evidence).toHaveProperty('scorer_version');
+    expect(retrieval_evidence).toHaveProperty('provenance');
   });
 
   it('score is deterministic — same inputs always produce same output', () => {

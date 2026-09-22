@@ -2,6 +2,8 @@
 
 > **Audience**: Engineering interviews, code reviewers, and future maintainers.
 > Every design decision below is accompanied by its rationale and the alternatives rejected.
+>
+> **Review note**: `docs/DESIGN_REFINEMENT.md` is the acceptance-facing refinement for lifecycle, correction, ambiguous conflicts, retrieval scoring, deletion, benchmark fixtures, tests, and reviewer critique. It supersedes any earlier lifecycle wording here that modeled ambiguous conflicts as a first-class memory state.
 
 ---
 

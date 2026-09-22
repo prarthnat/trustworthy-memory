@@ -14,6 +14,10 @@ const schema     = fs.readFileSync(schemaPath, 'utf8');
 
 function migrate() {
   db.exec(schema);
+  const retrievalColumns = db.prepare('PRAGMA table_info(retrieval_log)').all().map((col) => col.name);
+  if (!retrievalColumns.includes('scorer')) {
+    db.prepare("ALTER TABLE retrieval_log ADD COLUMN scorer TEXT DEFAULT '{}'").run();
+  }
   console.log('[migrate] Schema applied successfully');
 }
 
