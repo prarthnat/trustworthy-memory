@@ -23,7 +23,6 @@ npm run benchmark # deterministic benchmark CLI
 |------|--------|
 | **Rubric submission summary** | [docs/SUBMISSION.md](docs/SUBMISSION.md) |
 | AC1–AC6 traceability | [docs/FINAL_REVIEW_CHECKLIST.md](docs/FINAL_REVIEW_CHECKLIST.md) |
-| Interview defense | [docs/INTERVIEW_CHEATSHEET.md](docs/INTERVIEW_CHEATSHEET.md) |
 | Full architecture | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) |
 
 ## UI tabs
